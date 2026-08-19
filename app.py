@@ -236,6 +236,7 @@ with tab1:
                     "Виконавець": { "relation": [{"id": staff_data[mechanic]}] },
                     "Прийняв роботу": { "relation": [{"id": managers_data[manager]}] },
                     "Вид ремонту": { "select": {"name": repair_type} },
+                    "Зміна": { "select": {"name": shift} },
                     "Планова тривалість": { "number": plan_dur },
                     "Фактична тривалість": { "number": fact_dur }
                 }
