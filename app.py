@@ -6,7 +6,7 @@ from datetime import date, timedelta
 # ==========================================
 # 1. НАЛАШТУВАННЯ
 # ==========================================
-NOTION_TOKEN = "ntn_G57772874227mq1hCIkHyST2twvBfzGWKpnhnvCMzrmdMf"
+NOTION_TOKEN = st.secrets["NOTION_TOKEN"]
 EQUIPMENT_DB_ID = "3c01585a68fe8050b21cda745390d13c"
 STAFF_DB_ID = "3c01585a68fe80608f94fe6bba5068a8"
 MANAGERS_DB_ID = "3c01585a68fe8055900adee2bec8e6de"
