@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import date, timedelta
+import time 
 
 # ==========================================
 # 1. НАЛАШТУВАННЯ
@@ -82,11 +83,9 @@ def fetch_equipment():
             if name:
                 clean_inv = inv_num.strip() if inv_num else ""
                 if clean_inv:
-                    # Якщо номер є - додаємо для пошуку
                     equip_dict[clean_inv] = {"name": name, "id": page['id']}
                     equip_dict[clean_inv.lstrip('0')] = {"name": name, "id": page['id']}
                 else:
-                    # Якщо номера немає - додаємо у список для вибору
                     equip_no_inv_list.append({"name": name, "id": page['id']})
                 
         has_more = data.get('has_more', False)
@@ -117,8 +116,7 @@ def fetch_managers():
     return managers_dict
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_recent_tickets():
-    last_month = (date.today() - timedelta(days=30)).isoformat()
+def fetch_recent_tickets(start_date_str, end_date_str):
     url = f"https://api.notion.com/v1/databases/{TICKETS_DB_ID}/query"
     
     tickets = []
@@ -128,7 +126,12 @@ def fetch_recent_tickets():
     while has_more:
         payload = {
             "page_size": 100,
-            "filter": {"property": "Дата", "date": {"on_or_after": last_month}},
+            "filter": {
+                "and": [
+                    {"property": "Дата", "date": {"on_or_after": start_date_str}},
+                    {"property": "Дата", "date": {"on_or_before": end_date_str}}
+                ]
+            },
             "sorts": [{"property": "Дата", "direction": "descending"}]
         }
         if next_cursor:
@@ -155,7 +158,6 @@ def fetch_recent_tickets():
             rep_data = props.get('Вид ремонту', {}).get('select')
             r_type = rep_data.get('name', "") if rep_data else ""
             
-            # Додаємо зчитування ЗМІНИ
             shift_data = props.get('Зміна', {}).get('select')
             shift = shift_data.get('name', "Не вказано") if shift_data else "Не вказано"
             
@@ -166,7 +168,7 @@ def fetch_recent_tickets():
                 "Дата": t_date, 
                 "Опис": desc, 
                 "Вид ремонту": r_type, 
-                "Зміна": shift, # Зберігаємо зміну
+                "Зміна": shift,
                 "Години": duration, 
                 "mech_id": mech_id, 
                 "inv_id": inv_id
@@ -190,12 +192,35 @@ manager_names = list(managers_data.keys())
 # ==========================================
 st.title("🛠 Тікет на виконання ремонтних робіт")
 
-tab1, tab2 = st.tabs(["📝 Створення тікета", "📊 Історія робіт (останні 30 днів)"])
+tab1, tab2 = st.tabs(["📝 Створення тікета", "📊 Історія робіт"])
 
 # ----------------- ВКЛАДКА 1: ФОРМА -----------------
 with tab1:
+    
+    # --- ДИНАМІЧНИЙ КОЛІР КНОПКИ ---
+    if st.session_state.get('ticket_sent', False):
+        btn_color = "#28a745" # Успішний зелений
+        btn_text = "✅ Тікет успішно відправлено!"
+    else:
+        btn_color = "#ED7117" # Морквяний помаранчевий
+        btn_text = "Відправити тікет 🚀"
+
+    # CSS для перефарбовування головної кнопки
+    st.markdown(f"""
+    <style>
+    button[kind="primary"] {{
+        background-color: {btn_color} !important;
+        border-color: {btn_color} !important;
+        color: white !important;
+        transition: background-color 0.4s ease;
+    }}
+    button[kind="primary"]:hover {{
+        filter: brightness(1.1);
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
     if st.session_state.get('show_success', False):
-        st.success("✅ Тікет успішно створено в Notion!")
         st.toast("Механізм запущено! Тікет у роботі ⚙️🔧", icon="⚙️")
         st.session_state.show_success = False
 
@@ -217,7 +242,6 @@ with tab1:
         equip_page_id = None
         
         if no_inv:
-            # У списку будуть ТІЛЬКИ ті, в кого пусте поле інвентарного номера
             no_inv_names = sorted(list(set([e['name'] for e in equip_no_inv_list if e['name']])))
             selected_name = st.selectbox("Оберіть обладнання зі списку:", ["Оберіть..."] + no_inv_names, key=f"sel_eq_{fk}")
             
@@ -250,9 +274,17 @@ with tab1:
         
         col_dur1, col_dur2 = st.columns(2)
         with col_dur1:
-            plan_dur_str = st.text_input("Планова тривалість (год)", placeholder="Наприклад: 1.5 або 1,5", key=f"plan_{fk}")
+            plan_dur_str = st.text_input("Планова тривалість (год)", placeholder="Наприклад: 1.5", key=f"plan_{fk}")
+        
         with col_dur2:
-            fact_dur_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 1.5 або 1,5", key=f"fact_{fk}")
+            fact_dur_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 1.5", key=f"fact_{fk}")
+            
+            fact_dur_val = parse_dur(fact_dur_str)
+            confirm_long = False
+            
+            if fact_dur_val > 12:
+                st.warning("⏱ Вказано більше 12 годин! Це не помилка?")
+                confirm_long = st.checkbox("Підтверджую, відпрацьовано > 12 год.", key=f"conf_12_{fk}")
         
         manager = st.selectbox("Прийняв роботу", manager_names, index=default_idx, key=f"man_{fk}")
 
@@ -262,12 +294,15 @@ with tab1:
 
     st.markdown("---")
 
-    if st.button("Відправити тікет 🚀", use_container_width=True):
+    # Зверни увагу: тут додано type="primary", щоб наш CSS її знайшов!
+    if st.button(btn_text, type="primary", use_container_width=True):
         if mechanic == "Оберіть...":
             st.warning("Будь ласка, оберіть виконавця!")
+        elif fact_dur_val > 12 and not confirm_long:
+            st.error("⚠️ Ви вказали понад 12 годин фактичної роботи. Якщо це не помилка, поставте галочку підтвердження біля поля годин.")
         else:
             plan_dur = parse_dur(plan_dur_str)
-            fact_dur = parse_dur(fact_dur_str)
+            fact_dur = fact_dur_val
             
             equip_relation = [{"id": equip_page_id}] if equip_page_id else []
             ticket_title = comment.strip() if comment.strip() else "Без опису"
@@ -292,16 +327,49 @@ with tab1:
             
             if res.status_code == 200:
                 fetch_recent_tickets.clear()
+                # 1. Вмикаємо зелений режим
+                st.session_state.ticket_sent = True
                 st.session_state.show_success = True
-                st.session_state.form_key += 1 
-                st.rerun()
+                st.rerun() # Перезавантажуємо, щоб кнопка стала зеленою
             else:
                 st.error(f"Помилка відправки: {res.text}")
 
+    # 2. Логіка затримки зеленої кнопки (2 секунди)
+    if st.session_state.get('ticket_sent', False):
+        time.sleep(2) # Чекаємо 2 секунди
+        st.session_state.ticket_sent = False # Вимикаємо зелений режим
+        st.session_state.form_key += 1 # Очищуємо форму
+        st.rerun() # Повертаємо все до початкового стану
+
 # ----------------- ВКЛАДКА 2: ІСТОРІЯ -----------------
 with tab2:
-    st.subheader("📊 База виконаних робіт за місяць")
-    recent_tickets = fetch_recent_tickets()
+    st.subheader("📊 База виконаних робіт")
+    
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        default_start = date.today() - timedelta(days=30)
+        default_end = date.today()
+        
+        selected_dates = st.date_input(
+            "🗓 Оберіть період:", 
+            value=(default_start, default_end),
+            key="date_range"
+        )
+        
+    with col_f2:
+        filter_mechanic = st.selectbox("🔍 Фільтр по виконавцю:", ["Всі"] + sorted(staff_names))
+        
+    if len(selected_dates) == 2:
+        start_d, end_d = selected_dates
+    else:
+        start_d = selected_dates[0]
+        end_d = selected_dates[0]
+        
+    start_str = start_d.isoformat()
+    end_str = end_d.isoformat()
+    
+    recent_tickets = fetch_recent_tickets(start_str, end_str)
     
     if recent_tickets:
         staff_id_to_name = {v: k for k, v in staff_data.items()}
@@ -314,10 +382,8 @@ with tab2:
             t["Обладнання"] = equip_id_to_name.get(t["inv_id"], "Поточні роботи / Не вказано")
             
         df = pd.DataFrame(recent_tickets)
-        # Додаємо колонку "Зміна" у таблицю
         df = df[["Дата", "Виконавець", "Обладнання", "Опис", "Вид ремонту", "Зміна", "Години"]]
         
-        filter_mechanic = st.selectbox("🔍 Фільтр по виконавцю:", ["Всі"] + sorted(staff_names))
         if filter_mechanic != "Всі":
             df = df[df["Виконавець"] == filter_mechanic]
             
@@ -326,12 +392,9 @@ with tab2:
             st.caption(f"Знайдено записів: {len(df)}")
             
             st.markdown("---")
-            st.markdown("### ⏱ Підсумки годин (за вибраними записами)")
+            st.markdown(f"### ⏱ Підсумки годин (за обраний період)")
             
-            # Рахуємо суму годин по кожній зміні
             summary_df = df.groupby('Зміна')['Години'].sum().reset_index()
-            
-            # Виводимо красиві блоки (метрики)
             col_metrics = st.columns(len(summary_df) + 1)
             
             for idx, row in summary_df.iterrows():
@@ -342,6 +405,6 @@ with tab2:
                 st.metric(label="🔥 Всього годин", value=f"{df['Години'].sum()} год")
                 
         else:
-            st.info(f"Для виконавця **{filter_mechanic}** за останній місяць записів не знайдено.")
+            st.info(f"Для виконавця **{filter_mechanic}** за обраний період записів не знайдено.")
     else:
-        st.info("За останній місяць немає жодного запису в реєстрі.")
+        st.info("За обраний період немає жодного запису в реєстрі.")
