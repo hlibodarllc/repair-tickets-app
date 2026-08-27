@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import date, timedelta
-import time 
+import time
 
 # ==========================================
 # 1. НАЛАШТУВАННЯ
@@ -12,6 +12,7 @@ EQUIPMENT_DB_ID = "3c01585a68fe8050b21cda745390d13c"
 STAFF_DB_ID = "3c01585a68fe80608f94fe6bba5068a8"
 MANAGERS_DB_ID = "3c01585a68fe8055900adee2bec8e6de"
 TICKETS_DB_ID = "3c01585a68fe800ab693cd14f0768717"
+TIME_TRACKING_DB_ID = "3c91585a68fe80f4a5bee29bffa23d2a" # Нова база обліку часу
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -30,9 +31,14 @@ hide_streamlit_style = """
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
+# Створюємо окремі ключі для очищення обох форм
 if 'form_key' not in st.session_state:
     st.session_state.form_key = 0
+if 'time_form_key' not in st.session_state:
+    st.session_state.time_form_key = 0
+    
 fk = st.session_state.form_key
+fk_time = st.session_state.time_form_key
 
 # ==========================================
 # 2. ДОПОМІЖНІ ФУНКЦІЇ
@@ -190,38 +196,37 @@ manager_names = list(managers_data.keys())
 # ==========================================
 # 3. ІНТЕРФЕЙС ТА ВКЛАДКИ
 # ==========================================
-st.title("🛠 Тікет на виконання ремонтних робіт")
+st.title("🛠 Внутрішній портал механіків")
 
-tab1, tab2 = st.tabs(["📝 Створення тікета", "📊 Історія робіт"])
+# Додали нову вкладку
+tab1, tab2, tab3 = st.tabs(["📝 Створення тікета", "📊 Історія робіт", "⏱ Облік відсутності"])
 
-# ----------------- ВКЛАДКА 1: ФОРМА -----------------
+# --- ДИНАМІЧНИЙ КОЛІР КНОПОК ДЛЯ ОБОХ ФОРМ ---
+is_any_sent = st.session_state.get('ticket_sent', False) or st.session_state.get('time_sent', False)
+btn_color = "#28a745" if is_any_sent else "#ED7117"
+
+st.markdown(f"""
+<style>
+button[kind="primary"] {{
+    background-color: {btn_color} !important;
+    border-color: {btn_color} !important;
+    color: white !important;
+    transition: background-color 0.4s ease;
+}}
+button[kind="primary"]:hover {{
+    filter: brightness(1.1);
+}}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ----------------- ВКЛАДКА 1: ТІКЕТИ -----------------
 with tab1:
     
-    # --- ДИНАМІЧНИЙ КОЛІР КНОПКИ ---
-    if st.session_state.get('ticket_sent', False):
-        btn_color = "#28a745" # Успішний зелений
-        btn_text = "✅ Тікет успішно відправлено!"
-    else:
-        btn_color = "#ED7117" # Морквяний помаранчевий
-        btn_text = "Відправити тікет 🚀"
-
-    # CSS для перефарбовування головної кнопки
-    st.markdown(f"""
-    <style>
-    button[kind="primary"] {{
-        background-color: {btn_color} !important;
-        border-color: {btn_color} !important;
-        color: white !important;
-        transition: background-color 0.4s ease;
-    }}
-    button[kind="primary"]:hover {{
-        filter: brightness(1.1);
-    }}
-    </style>
-    """, unsafe_allow_html=True)
+    btn_text1 = "✅ Тікет успішно відправлено!" if st.session_state.get('ticket_sent') else "Відправити тікет 🚀"
 
     if st.session_state.get('show_success', False):
-        st.toast("Механізм запущено! Тікет у роботі ⚙️🔧", icon="⚙️")
+        st.toast("Механізм запущено! Тікет у роботі ⚙️", icon="✅")
         st.session_state.show_success = False
 
     default_idx = 0
@@ -275,13 +280,11 @@ with tab1:
         col_dur1, col_dur2 = st.columns(2)
         with col_dur1:
             plan_dur_str = st.text_input("Планова тривалість (год)", placeholder="Наприклад: 1.5", key=f"plan_{fk}")
-        
         with col_dur2:
             fact_dur_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 1.5", key=f"fact_{fk}")
             
             fact_dur_val = parse_dur(fact_dur_str)
             confirm_long = False
-            
             if fact_dur_val > 12:
                 st.warning("⏱ Вказано більше 12 годин! Це не помилка?")
                 confirm_long = st.checkbox("Підтверджую, відпрацьовано > 12 год.", key=f"conf_12_{fk}")
@@ -289,21 +292,17 @@ with tab1:
         manager = st.selectbox("Прийняв роботу", manager_names, index=default_idx, key=f"man_{fk}")
 
     st.markdown("---")
-
     comment = st.text_area("Опис ремонту (що було зроблено)", placeholder="Введіть деталі проведених робіт...", key=f"com_{fk}")
-
     st.markdown("---")
 
-    # Зверни увагу: тут додано type="primary", щоб наш CSS її знайшов!
-    if st.button(btn_text, type="primary", use_container_width=True):
+    if st.button(btn_text1, type="primary", use_container_width=True, key=f"btn_ticket_{fk}"):
         if mechanic == "Оберіть...":
             st.warning("Будь ласка, оберіть виконавця!")
         elif fact_dur_val > 12 and not confirm_long:
-            st.error("⚠️ Ви вказали понад 12 годин фактичної роботи. Якщо це не помилка, поставте галочку підтвердження біля поля годин.")
+            st.error("⚠️ Ви вказали понад 12 годин фактичної роботи. Підтвердіть галочкою, якщо це не помилка.")
         else:
             plan_dur = parse_dur(plan_dur_str)
             fact_dur = fact_dur_val
-            
             equip_relation = [{"id": equip_page_id}] if equip_page_id else []
             ticket_title = comment.strip() if comment.strip() else "Без опису"
 
@@ -322,40 +321,110 @@ with tab1:
                 }
             }
             
-            post_url = "https://api.notion.com/v1/pages"
-            res = requests.post(post_url, headers=HEADERS, json=new_page_data)
-            
+            res = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=new_page_data)
             if res.status_code == 200:
                 fetch_recent_tickets.clear()
-                # 1. Вмикаємо зелений режим
                 st.session_state.ticket_sent = True
                 st.session_state.show_success = True
-                st.rerun() # Перезавантажуємо, щоб кнопка стала зеленою
+                st.rerun()
             else:
                 st.error(f"Помилка відправки: {res.text}")
 
-    # 2. Логіка затримки зеленої кнопки (2 секунди)
     if st.session_state.get('ticket_sent', False):
-        time.sleep(2) # Чекаємо 2 секунди
-        st.session_state.ticket_sent = False # Вимикаємо зелений режим
-        st.session_state.form_key += 1 # Очищуємо форму
-        st.rerun() # Повертаємо все до початкового стану
+        time.sleep(2)
+        st.session_state.ticket_sent = False
+        st.session_state.form_key += 1
+        st.rerun()
 
-# ----------------- ВКЛАДКА 2: ІСТОРІЯ -----------------
+# ----------------- ВКЛАДКА 2: ОБЛІК ЧАСУ -----------------
+with tab3:
+    
+    btn_text3 = "✅ Запис успішно збережено!" if st.session_state.get('time_sent') else "Записати години 🚀"
+
+    if st.session_state.get('show_time_success', False):
+        st.toast("Години успішно зафіксовано ⏱", icon="✅")
+        st.session_state.show_time_success = False
+
+    col3_1, col3_2 = st.columns(2)
+
+    with col3_1:
+        st.subheader("Основна інформація")
+        selected_date_time = st.date_input("Дата", value=date.today(), key=f"t_date_{fk_time}")
+        mechanic_time = st.selectbox("Виконавець", ["Оберіть..."] + staff_names, key=f"t_mech_{fk_time}")
+        activity_type = st.selectbox("Вид діяльності", ["Відрядження", "Медогляд", "Відгул", "Відпустка", "Хвороба", "Інше"], key=f"t_act_{fk_time}")
+
+    with col3_2:
+        st.subheader("Тривалість")
+        col_tdur1, col_tdur2 = st.columns(2)
+        with col_tdur1:
+            plan_dur_t_str = st.text_input("Планова тривалість (год)", placeholder="Наприклад: 8", key=f"t_plan_{fk_time}")
+        with col_tdur2:
+            fact_dur_t_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 8", key=f"t_fact_{fk_time}")
+            
+            fact_dur_t_val = parse_dur(fact_dur_t_str)
+            confirm_long_t = False
+            if fact_dur_t_val > 12:
+                st.warning("⏱ Більше 12 годин!")
+                confirm_long_t = st.checkbox("Підтверджую > 12 год.", key=f"t_conf_{fk_time}")
+                
+        manager_time = st.selectbox("Погодив", manager_names, index=default_idx, key=f"t_man_{fk_time}")
+
+    st.markdown("---")
+    comment_time = st.text_area("Опис (деталі)", placeholder="Уточніть інформацію (наприклад, куди відрядження або причина відгулу)...", key=f"t_com_{fk_time}")
+    st.markdown("---")
+
+    if st.button(btn_text3, type="primary", use_container_width=True, key=f"btn_time_{fk_time}"):
+        if mechanic_time == "Оберіть...":
+            st.warning("Будь ласка, оберіть виконавця!")
+        elif fact_dur_t_val > 12 and not confirm_long_t:
+            st.error("⚠️ Ви вказали понад 12 годин. Підтвердіть галочкою, якщо це не помилка.")
+        else:
+            plan_dur_t = parse_dur(plan_dur_t_str)
+            fact_dur_t = fact_dur_t_val
+            
+            # Автоматично генеруємо назву запису для краси в Notion
+            title_text = f"{activity_type} - {mechanic_time}"
+            desc_text = comment_time.strip() if comment_time.strip() else ""
+
+            time_page_data = {
+                "parent": {"database_id": TIME_TRACKING_DB_ID},
+                "properties": {
+                    "Назва": { "title": [{"text": {"content": title_text}}] },
+                    "Дата": { "date": {"start": str(selected_date_time)} },
+                    "Виконавець": { "relation": [{"id": staff_data[mechanic_time]}] },
+                    "Вид діяльності": { "select": {"name": activity_type} },
+                    "Планова тривалість": { "number": plan_dur_t },
+                    "Фактична тривалість": { "number": fact_dur_t },
+                    "Погодив": { "relation": [{"id": managers_data[manager_time]}] },
+                    "Опис": { "rich_text": [{"text": {"content": desc_text}}] }
+                }
+            }
+            
+            res_t = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=time_page_data)
+            if res_t.status_code == 200:
+                st.session_state.time_sent = True
+                st.session_state.show_time_success = True
+                st.rerun()
+            else:
+                st.error(f"Помилка відправки: {res_t.text}")
+
+    if st.session_state.get('time_sent', False):
+        time.sleep(2)
+        st.session_state.time_sent = False
+        st.session_state.time_form_key += 1
+        st.rerun()
+
+
+# ----------------- ВКЛАДКА 3: ІСТОРІЯ -----------------
 with tab2:
-    st.subheader("📊 База виконаних робіт")
+    st.subheader("📊 База виконаних ремонтних робіт")
     
     col_f1, col_f2 = st.columns(2)
     
     with col_f1:
         default_start = date.today() - timedelta(days=30)
         default_end = date.today()
-        
-        selected_dates = st.date_input(
-            "🗓 Оберіть період:", 
-            value=(default_start, default_end),
-            key="date_range"
-        )
+        selected_dates = st.date_input("🗓 Оберіть період:", value=(default_start, default_end), key="date_range")
         
     with col_f2:
         filter_mechanic = st.selectbox("🔍 Фільтр по виконавцю:", ["Всі"] + sorted(staff_names))
