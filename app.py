@@ -69,6 +69,8 @@ def fetch_equipment():
     url = f"https://api.notion.com/v1/databases/{EQUIPMENT_DB_ID}/query"
     equip_dict = {}
     equip_no_inv_list = []
+    unique_equip = [] # НОВИЙ СПИСОК ДЛЯ ДОВІДНИКА
+    
     has_more = True
     next_cursor = None
     
@@ -87,6 +89,10 @@ def fetch_equipment():
             
             if name:
                 clean_inv = inv_num.strip() if inv_num else ""
+                
+                # Додаємо запис у загальний довідник
+                unique_equip.append({"Інвентарний номер": clean_inv, "Назва обладнання": name})
+                
                 if clean_inv:
                     equip_dict[clean_inv] = {"name": name, "id": page['id']}
                     equip_dict[clean_inv.lstrip('0')] = {"name": name, "id": page['id']}
@@ -96,7 +102,7 @@ def fetch_equipment():
         has_more = data.get('has_more', False)
         next_cursor = data.get('next_cursor')
         
-    return equip_dict, equip_no_inv_list
+    return equip_dict, equip_no_inv_list, unique_equip
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_staff():
@@ -174,7 +180,6 @@ def fetch_recent_tickets(start_date_str, end_date_str):
         
     return tickets
 
-# --- НОВА ФУНКЦІЯ ДЛЯ ЖУРНАЛУ ВІДСУТНОСТІ ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_recent_absences(start_date_str, end_date_str):
     url = f"https://api.notion.com/v1/databases/{TIME_TRACKING_DB_ID}/query"
@@ -233,7 +238,7 @@ def fetch_recent_absences(start_date_str, end_date_str):
     return absences
 
 with st.spinner('⚙️ Синхронізація з базами Notion... Будь ласка, зачекайте...'):
-    equip_data, equip_no_inv_list = fetch_equipment()
+    equip_data, equip_no_inv_list, unique_equip = fetch_equipment() # Додали unique_equip
     staff_data = fetch_staff()
     managers_data = fetch_managers()
 
@@ -243,14 +248,15 @@ manager_names = list(managers_data.keys())
 # ==========================================
 # 3. ІНТЕРФЕЙС ТА ВКЛАДКИ
 # ==========================================
-st.title("🛠 Внутрішній портал механіків")
+st.title("🛠 Портал технічної служби")
 
-# Перегрупували вкладки: спочатку форми, потім журнали
-tab_create_ticket, tab_create_time, tab_history_ticket, tab_history_time = st.tabs([
-    "📝 Створення тікета", 
-    "⏱ Облік часу", 
+# Додали 5-ту вкладку "Довідник обладнання"
+tab_create_ticket, tab_history_ticket, tab_create_time, tab_history_time, tab_equip = st.tabs([
+    "📝 Реєстрація тікета", 
     "📊 Історія робіт", 
-    "📅 Журнал відсутності"
+    "⏱ Облік відсутності", 
+    "📅 Журнал відсутності",
+    "🗂 Довідник обладнання"
 ])
 
 is_any_sent = st.session_state.get('ticket_sent', False) or st.session_state.get('time_sent', False)
@@ -271,7 +277,7 @@ button[kind="primary"]:hover {{
 """, unsafe_allow_html=True)
 
 
-# ----------------- ВКЛАДКА 1: СТВОРЕННЯ ТІКЕТА -----------------
+# ----------------- ВКЛАДКА 1: РЕЄСТРАЦІЯ ТІКЕТА -----------------
 with tab_create_ticket:
     btn_text1 = "✅ Тікет успішно відправлено!" if st.session_state.get('ticket_sent') else "Відправити тікет 🚀"
 
@@ -327,7 +333,6 @@ with tab_create_ticket:
         repair_type = st.selectbox("Вид ремонту", ["Поточний", "Капітальний", "Модернізація", "Створення нового", "Експлуатація"], key=f"rep_{fk}")
         shift = st.selectbox("Зміна", ["денна", "нічна", "понаднормово", "екстрений виклик","відрядження"], key=f"shift_{fk}")
         
-        # Прибрали планову тривалість
         fact_dur_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 1.5", key=f"fact_{fk}")
         
         fact_dur_val = parse_dur(fact_dur_str)
@@ -380,79 +385,7 @@ with tab_create_ticket:
         st.session_state.form_key += 1
         st.rerun()
 
-# ----------------- ВКЛАДКА 2: ОБЛІК ЧАСУ -----------------
-with tab_create_time:
-    btn_text3 = "✅ Запис успішно збережено!" if st.session_state.get('time_sent') else "Записати години 🚀"
-
-    if st.session_state.get('show_time_success', False):
-        st.toast("Години успішно зафіксовано ⏱", icon="✅")
-        st.session_state.show_time_success = False
-
-    col3_1, col3_2 = st.columns(2)
-
-    with col3_1:
-        st.subheader("Основна інформація")
-        selected_date_time = st.date_input("Дата", value=date.today(), key=f"t_date_{fk_time}")
-        mechanic_time = st.selectbox("Виконавець", ["Оберіть..."] + staff_names, key=f"t_mech_{fk_time}")
-        activity_type = st.selectbox("Вид діяльності", ["Відрядження", "Медогляд", "Відгул", "Відпустка", "Хвороба", "Інше"], key=f"t_act_{fk_time}")
-
-    with col3_2:
-        st.subheader("Тривалість та узгодження")
-        
-        # Прибрали планову тривалість
-        fact_dur_t_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 8", key=f"t_fact_{fk_time}")
-        
-        fact_dur_t_val = parse_dur(fact_dur_t_str)
-        confirm_long_t = False
-        if fact_dur_t_val > 12:
-            st.warning("⏱ Більше 12 годин!")
-            confirm_long_t = st.checkbox("Підтверджую > 12 год.", key=f"t_conf_{fk_time}")
-            
-        manager_time = st.selectbox("Погодив", manager_names, index=default_idx, key=f"t_man_{fk_time}")
-
-    st.markdown("---")
-    comment_time = st.text_area("Опис (деталі)", placeholder="Уточніть інформацію (наприклад, куди відрядження або причина відгулу)...", key=f"t_com_{fk_time}")
-    st.markdown("---")
-
-    if st.button(btn_text3, type="primary", use_container_width=True, key=f"btn_time_{fk_time}"):
-        if mechanic_time == "Оберіть...":
-            st.warning("Будь ласка, оберіть виконавця!")
-        elif fact_dur_t_val > 12 and not confirm_long_t:
-            st.error("⚠️ Ви вказали понад 12 годин. Підтвердіть галочкою, якщо це не помилка.")
-        else:
-            title_text = f"{activity_type} - {mechanic_time}"
-            desc_text = comment_time.strip() if comment_time.strip() else ""
-
-            time_page_data = {
-                "parent": {"database_id": TIME_TRACKING_DB_ID},
-                "properties": {
-                    "Назва": { "title": [{"text": {"content": title_text}}] },
-                    "Дата": { "date": {"start": str(selected_date_time)} },
-                    "Виконавець": { "relation": [{"id": staff_data[mechanic_time]}] },
-                    "Вид діяльності": { "select": {"name": activity_type} },
-                    "Фактична тривалість": { "number": fact_dur_t_val },
-                    "Погодив": { "relation": [{"id": managers_data[manager_time]}] },
-                    "Опис": { "rich_text": [{"text": {"content": desc_text}}] }
-                }
-            }
-            
-            res_t = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=time_page_data)
-            if res_t.status_code == 200:
-                fetch_recent_absences.clear() # Очищаємо кеш журналу відсутності
-                st.session_state.time_sent = True
-                st.session_state.show_time_success = True
-                st.rerun()
-            else:
-                st.error(f"Помилка відправки: {res_t.text}")
-
-    if st.session_state.get('time_sent', False):
-        time.sleep(2)
-        st.session_state.time_sent = False
-        st.session_state.time_form_key += 1
-        st.rerun()
-
-
-# ----------------- ВКЛАДКА 3: ІСТОРІЯ РЕМОНТІВ -----------------
+# ----------------- ВКЛАДКА 2: ІСТОРІЯ РОБІТ -----------------
 with tab_history_ticket:
     st.subheader("📊 База виконаних ремонтних робіт")
     
@@ -512,6 +445,75 @@ with tab_history_ticket:
     else:
         st.info("За обраний період немає жодного запису в реєстрі.")
 
+# ----------------- ВКЛАДКА 3: ОБЛІК ВІДСУТНОСТІ -----------------
+with tab_create_time:
+    btn_text3 = "✅ Запис успішно збережено!" if st.session_state.get('time_sent') else "Записати години 🚀"
+
+    if st.session_state.get('show_time_success', False):
+        st.toast("Години успішно зафіксовано ⏱", icon="✅")
+        st.session_state.show_time_success = False
+
+    col3_1, col3_2 = st.columns(2)
+
+    with col3_1:
+        st.subheader("Основна інформація")
+        selected_date_time = st.date_input("Дата", value=date.today(), key=f"t_date_{fk_time}")
+        mechanic_time = st.selectbox("Виконавець", ["Оберіть..."] + staff_names, key=f"t_mech_{fk_time}")
+        activity_type = st.selectbox("Вид діяльності", ["Відрядження", "Медогляд", "Відгул", "Відпустка", "Хвороба", "Інше"], key=f"t_act_{fk_time}")
+
+    with col3_2:
+        st.subheader("Тривалість та узгодження")
+        fact_dur_t_str = st.text_input("Фактична тривалість (год)", placeholder="Наприклад: 8", key=f"t_fact_{fk_time}")
+        
+        fact_dur_t_val = parse_dur(fact_dur_t_str)
+        confirm_long_t = False
+        if fact_dur_t_val > 12:
+            st.warning("⏱ Більше 12 годин!")
+            confirm_long_t = st.checkbox("Підтверджую > 12 год.", key=f"t_conf_{fk_time}")
+            
+        manager_time = st.selectbox("Погодив", manager_names, index=default_idx, key=f"t_man_{fk_time}")
+
+    st.markdown("---")
+    comment_time = st.text_area("Опис (деталі)", placeholder="Уточніть інформацію (наприклад, куди відрядження або причина відгулу)...", key=f"t_com_{fk_time}")
+    st.markdown("---")
+
+    if st.button(btn_text3, type="primary", use_container_width=True, key=f"btn_time_{fk_time}"):
+        if mechanic_time == "Оберіть...":
+            st.warning("Будь ласка, оберіть виконавця!")
+        elif fact_dur_t_val > 12 and not confirm_long_t:
+            st.error("⚠️ Ви вказали понад 12 годин. Підтвердіть галочкою, якщо це не помилка.")
+        else:
+            title_text = f"{activity_type} - {mechanic_time}"
+            desc_text = comment_time.strip() if comment_time.strip() else ""
+
+            time_page_data = {
+                "parent": {"database_id": TIME_TRACKING_DB_ID},
+                "properties": {
+                    "Назва": { "title": [{"text": {"content": title_text}}] },
+                    "Дата": { "date": {"start": str(selected_date_time)} },
+                    "Виконавець": { "relation": [{"id": staff_data[mechanic_time]}] },
+                    "Вид діяльності": { "select": {"name": activity_type} },
+                    "Фактична тривалість": { "number": fact_dur_t_val },
+                    "Погодив": { "relation": [{"id": managers_data[manager_time]}] },
+                    "Опис": { "rich_text": [{"text": {"content": desc_text}}] }
+                }
+            }
+            
+            res_t = requests.post("https://api.notion.com/v1/pages", headers=HEADERS, json=time_page_data)
+            if res_t.status_code == 200:
+                fetch_recent_absences.clear()
+                st.session_state.time_sent = True
+                st.session_state.show_time_success = True
+                st.rerun()
+            else:
+                st.error(f"Помилка відправки: {res_t.text}")
+
+    if st.session_state.get('time_sent', False):
+        time.sleep(2)
+        st.session_state.time_sent = False
+        st.session_state.time_form_key += 1
+        st.rerun()
+
 # ----------------- ВКЛАДКА 4: ЖУРНАЛ ВІДСУТНОСТІ -----------------
 with tab_history_time:
     st.subheader("📅 Журнал відсутності та іншої діяльності")
@@ -556,7 +558,6 @@ with tab_history_time:
             st.markdown("---")
             st.markdown(f"### ⏱ Підсумки годин (за обраний період)")
             
-            # Групуємо години по виду діяльності (Відпустка, Хвороба тощо)
             summary_df_a = df_a.groupby('Вид діяльності')['Години'].sum().reset_index()
             col_metrics_a = st.columns(len(summary_df_a) + 1)
             
@@ -570,3 +571,27 @@ with tab_history_time:
             st.info(f"Для виконавця **{filter_mechanic_a}** за обраний період записів не знайдено.")
     else:
         st.info("За обраний період немає жодного запису в журналі.")
+
+# ----------------- ВКЛАДКА 5: ДОВІДНИК ОБЛАДНАННЯ -----------------
+with tab_equip:
+    st.subheader("🗂 Довідник обладнання")
+    
+    # Рядок пошуку
+    search_query = st.text_input("🔍 Пошук за назвою або інвентарним номером:", placeholder="Введіть код або частину назви...")
+    
+    # Перетворюємо наш чистий список у таблицю
+    df_equip = pd.DataFrame(unique_equip)
+    
+    if not df_equip.empty:
+        # Якщо користувач щось ввів, фільтруємо таблицю
+        if search_query:
+            # Шукаємо збіги і в колонці назви, і в номері (без урахування регістру)
+            mask = df_equip['Назва обладнання'].astype(str).str.contains(search_query, case=False, na=False) | \
+                   df_equip['Інвентарний номер'].astype(str).str.contains(search_query, case=False, na=False)
+            df_equip = df_equip[mask]
+        
+        # Відображаємо результат
+        st.dataframe(df_equip, use_container_width=True, hide_index=True)
+        st.caption(f"Знайдено обладнання: {len(df_equip)}")
+    else:
+        st.info("Довідник обладнання порожній.")
